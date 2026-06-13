@@ -3,6 +3,12 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versionado siguiendo [SemVer](https://semver.org/lang/es/).
 
+## [1.0.1] - 2026-06-12
+
+### Changed
+- Logs de diagnóstico adicionales: longitud del password leído y dump del header
+  `WWW-Authenticate` cuando hay 401, para depurar fallos de autenticación digest.
+
 ## [1.0.0] - 2026-06-12
 
 ### Added

@@ -268,8 +268,15 @@ def run(cfg: Config, log: logging.Logger) -> None:
                 else:
                     log.debug("↓ audit-only (other): %s", event.get("event_type"))
 
+
         except requests.exceptions.HTTPError as exc:
             log.error("HTTP error del controlador: %s", exc)
+            if exc.response is not None:
+                log.error("  Status: %s", exc.response.status_code)
+                log.error("  Headers WWW-Authenticate: %r",
+                          exc.response.headers.get("WWW-Authenticate"))
+                log.error("  Body (primeros 300 chars): %r",
+                          exc.response.text[:300])
         except requests.exceptions.ConnectionError as exc:
             log.error("Conexión perdida: %s", exc)
         except requests.exceptions.RequestException as exc:
@@ -319,8 +326,12 @@ def main() -> None:
         sys.exit(1)
 
     log.info(
-        "Listener iniciado. Controlador=%s, HA webhook=%s, audit=%s",
+        "Listener iniciado. Controlador=%s user=%s pwd_len=%d pwd_repr=%r, HA webhook=%s, audit=%s",
         cfg.controller_host,
+        cfg.controller_user,
+        len(cfg.controller_password),
+        cfg.controller_password[:1] + "***" + cfg.controller_password[-1:] if len(
+            cfg.controller_password) > 2 else "***",
         cfg.ha_webhook_url,
         cfg.audit_log_path,
     )

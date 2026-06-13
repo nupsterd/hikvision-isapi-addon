@@ -1,5 +1,5 @@
 name: Hikvision ISAPI Listener
-version: "1.0.0"
+version: "1.0.1"
 slug: hikvision_isapi_listener
 description: >
   Listener del Event Stream ISAPI de controladores de acceso Hikvision.
