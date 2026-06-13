@@ -269,14 +269,38 @@ def run(cfg: Config, log: logging.Logger) -> None:
                     log.debug("↓ audit-only (other): %s", event.get("event_type"))
 
 
+
         except requests.exceptions.HTTPError as exc:
             log.error("HTTP error del controlador: %s", exc)
             if exc.response is not None:
-                log.error("  Status: %s", exc.response.status_code)
+                status = exc.response.status_code
+                body = exc.response.text[:500]
+                log.error("  Status: %s", status)
                 log.error("  Headers WWW-Authenticate: %r",
                           exc.response.headers.get("WWW-Authenticate"))
-                log.error("  Body (primeros 300 chars): %r",
-                          exc.response.text[:300])
+                log.error("  Body: %r", body)
+                # Detectar lockout por intentos fallidos
+                if status == 401 and "lockStatus" in body and "lock" in body:
+                    import re
+                    m = re.search(r"<unlockTime>(\d+)</unlockTime>", body)
+                    wait_s = int(m.group(1)) + 30 if m else 900
+                    log.error(
+                        "*** CUENTA BLOQUEADA por la controladora. "
+                        "Esperando %d segundos antes de reintentar. "
+                        "NO reintentes manualmente, eso prolonga el bloqueo. ***",
+                        wait_s,
+                    )
+                    time.sleep(wait_s)
+                    continue
+                # 401 sin lockout = password incorrecto. No reintentar agresivo.
+                if status == 401:
+                    log.error(
+                        "*** Autenticación fallida (401 sin lockout). "
+                        "Verificá user/password en Configuration. "
+                        "Esperando 5 minutos antes de reintentar para evitar lockout. ***"
+                    )
+                    time.sleep(300)
+                    continue
         except requests.exceptions.ConnectionError as exc:
             log.error("Conexión perdida: %s", exc)
         except requests.exceptions.RequestException as exc:

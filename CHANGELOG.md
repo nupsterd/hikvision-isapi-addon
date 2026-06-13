@@ -3,6 +3,15 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versionado siguiendo [SemVer](https://semver.org/lang/es/).
 
+## [1.0.2] - 2026-06-12
+
+### Fixed
+- Manejo específico de respuestas 401 para evitar amplificar lockouts de
+  cuenta de la controladora Hikvision. Si la controladora responde con
+  `<lockStatus>lock</lockStatus>`, el listener espera el tiempo indicado
+  por `<unlockTime>` antes de reintentar. Si es 401 sin lockout (password
+  incorrecto), espera 5 minutos antes de reintentar en lugar de bucle de 5s.
+
 ## [1.0.1] - 2026-06-12
 
 ### Changed
