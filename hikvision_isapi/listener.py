@@ -19,6 +19,7 @@ import os
 import signal
 import sys
 import time
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -75,6 +76,8 @@ EVENT_TYPES: dict[tuple[int, int], str] = {
     (5, 2): "Authentication Failed (credencial inválida)",
     (5, 21): "Door Unlocked",
     (5, 22): "Door Locked",
+    (5, 23): "Exit Button Pressed",
+    (5, 24): "Exit Button Released",
     (5, 30): "Door Forced Open",
     (5, 31): "Door Open Timeout",
 }
@@ -228,9 +231,14 @@ def forward_to_ha(webhook_url: str, event: dict, log: logging.Logger) -> None:
 # ---------------------------------------------------------------------------
 
 def run(cfg: Config, log: logging.Logger) -> None:
-    """Loop principal del listener. Reconecta indefinidamente ante caídas."""
+    """Loop principal del listener. Reconecta indefinidamente ante caídas
+    y detecta streams zombie (conectado pero sin datos)."""
     audit = AuditLogger(cfg.audit_log_path)
     url = f"http://{cfg.controller_host}/ISAPI/Event/notification/alertStream"
+
+    # Timeout máximo sin recibir nada del stream (incluso heartbeats).
+    # Hikvision emite videoloss heartbeats cada ~10s, así que 60s es generoso.
+    STREAM_IDLE_TIMEOUT = 60
 
     while True:
         try:
@@ -239,36 +247,77 @@ def run(cfg: Config, log: logging.Logger) -> None:
                 url,
                 auth=HTTPDigestAuth(cfg.controller_user, cfg.controller_password),
                 stream=True,
-                timeout=(10, None),  # 10s para handshake, infinito para read
+                timeout=(10, STREAM_IDLE_TIMEOUT),
             )
             response.raise_for_status()
             log.info("Conectado. Escuchando eventos.")
 
-            for event in iter_events_from_stream(response, log):
-                # 1. Audit: siempre se loguea todo
-                audit.write(event)
+            last_data_at = time.monotonic()
 
-                # 2. Filtrado para HA
-                if event.get("kind") == "access_controller_event":
-                    major = event.get("major")
-                    sub = event.get("sub")
-                    if should_forward_to_ha(major, sub):
-                        log.info(
-                            "→ HA: door=%s serial=%s %s",
-                            event.get("door_no"),
-                            event.get("serial_no"),
-                            event.get("description"),
-                        )
-                        forward_to_ha(cfg.ha_webhook_url, event, log)
+            buffer = b""
+            for chunk in response.iter_content(chunk_size=1024):
+                # Watchdog: si pasó mucho tiempo sin chunks, asumir zombie
+                if time.monotonic() - last_data_at > STREAM_IDLE_TIMEOUT:
+                    log.warning(
+                        "Stream sin datos durante %ds — asumiendo zombie, "
+                        "reconectando.",
+                        STREAM_IDLE_TIMEOUT,
+                    )
+                    break
+
+                if not chunk:
+                    continue
+
+                last_data_at = time.monotonic()
+                buffer += chunk
+
+                while MIME_BOUNDARY in buffer:
+                    part, _, buffer = buffer.partition(MIME_BOUNDARY)
+                    if not part.strip():
+                        continue
+
+                    if b"\r\n\r\n" in part:
+                        _, _, body = part.partition(b"\r\n\r\n")
+                    elif b"\n\n" in part:
+                        _, _, body = part.partition(b"\n\n")
+                    else:
+                        continue
+
+                    event = parse_event_block(body, log)
+                    if event is None:
+                        continue
+
+                    # Audit: siempre todos
+                    audit.write(event)
+
+                    # Filtrado para HA
+                    if event.get("kind") == "access_controller_event":
+                        major = event.get("major")
+                        sub = event.get("sub")
+                        if should_forward_to_ha(major, sub):
+                            log.info(
+                                "→ HA: door=%s serial=%s %s",
+                                event.get("door_no"),
+                                event.get("serial_no"),
+                                event.get("description"),
+                            )
+                            forward_to_ha(cfg.ha_webhook_url, event, log)
+                        else:
+                            log.debug(
+                                "↓ audit-only: %s",
+                                event.get("description"),
+                            )
                     else:
                         log.debug(
-                            "↓ audit-only: %s",
-                            event.get("description"),
+                            "↓ audit-only (other): %s",
+                            event.get("event_type"),
                         )
-                else:
-                    log.debug("↓ audit-only (other): %s", event.get("event_type"))
 
-
+        except requests.exceptions.ReadTimeout:
+            log.warning(
+                "Read timeout del stream (%ds sin datos). Reconectando.",
+                STREAM_IDLE_TIMEOUT,
+            )
 
         except requests.exceptions.HTTPError as exc:
             log.error("HTTP error del controlador: %s", exc)
@@ -279,33 +328,32 @@ def run(cfg: Config, log: logging.Logger) -> None:
                 log.error("  Headers WWW-Authenticate: %r",
                           exc.response.headers.get("WWW-Authenticate"))
                 log.error("  Body: %r", body)
-                # Detectar lockout por intentos fallidos
+
                 if status == 401 and "lockStatus" in body and "lock" in body:
                     import re
                     m = re.search(r"<unlockTime>(\d+)</unlockTime>", body)
                     wait_s = int(m.group(1)) + 30 if m else 900
                     log.error(
                         "*** CUENTA BLOQUEADA por la controladora. "
-                        "Esperando %d segundos antes de reintentar. "
-                        "NO reintentes manualmente, eso prolonga el bloqueo. ***",
+                        "Esperando %ds antes de reintentar. ***",
                         wait_s,
                     )
                     time.sleep(wait_s)
                     continue
-                # 401 sin lockout = password incorrecto. No reintentar agresivo.
+
                 if status == 401:
                     log.error(
                         "*** Autenticación fallida (401 sin lockout). "
-                        "Verificá user/password en Configuration. "
-                        "Esperando 5 minutos antes de reintentar para evitar lockout. ***"
+                        "Esperando 5 minutos antes de reintentar. ***"
                     )
                     time.sleep(300)
                     continue
+
         except requests.exceptions.ConnectionError as exc:
             log.error("Conexión perdida: %s", exc)
         except requests.exceptions.RequestException as exc:
             log.error("Error de request: %s", exc)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.exception("Excepción no manejada en el loop: %s", exc)
 
         log.info("Reintentando conexión en %ds...", cfg.reconnect_delay)

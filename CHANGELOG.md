@@ -3,6 +3,24 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versionado siguiendo [SemVer](https://semver.org/lang/es/).
 
+## [1.0.4] - 2026-06-13
+
+### Added
+- Eventos `(5, 23)` Exit Button Pressed y `(5, 24)` Exit Button Released
+  agregados al diccionario.
+- Zona horaria `America/Bogota` configurada en el container Docker para
+  alinear timestamps del log con la hora local.
+
+### Fixed
+- Watchdog del stream: detecta conexiones zombie (conectado pero sin
+  datos) usando timeout de lectura de 60s. Hikvision emite heartbeats
+  `videoloss` cada ~10s, así que silencio mayor a 60s indica problema.
+  Antes el stream podía quedarse colgado silenciosamente.
+
+### Removed
+- Función `iter_events_from_stream()` (lógica embebida en `run()` para
+  permitir el watchdog).
+
 ## [1.0.3] - 2026-06-12
 
 ### Removed

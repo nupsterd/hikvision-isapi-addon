@@ -5,11 +5,17 @@ FROM $BUILD_FROM
 LABEL maintainer="nupsterd"
 LABEL description="Hikvision ISAPI Event Stream Listener for Home Assistant"
 
+# Zona horaria del container
+ENV TZ=America/Bogota
+
 # Instalar Python 3 y dependencias del sistema
 RUN apk add --no-cache \
     python3 \
     py3-pip \
-    py3-requests
+    py3-requests \
+    tzdata && \
+    cp /usr/share/zoneinfo/$TZ /etc/localtime && \
+    echo $TZ > /etc/timezone
 
 # Setup del directorio de trabajo
 WORKDIR /app
