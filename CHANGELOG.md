@@ -3,6 +3,16 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versionado siguiendo [SemVer](https://semver.org/lang/es/).
 
+## [1.0.5] - 2026-06-13
+
+### Added
+- Nuevos eventos identificados experimentalmente con sensor magnético
+  Hikvision DS-PD1-MC-WS conectado:
+  - `(5, 25)` Door Open (autorizado, tras Remote Unlock o Exit Button)
+  - `(5, 26)` Door Closed (sensor detecta imanes juntos)
+  - `(5, 27)` Door Forced Open (intrusión: puerta abierta sin autorización)
+  - `(5, 28)` Door Open Timeout (puerta abierta más del tiempo configurado)
+
 ## [1.0.4] - 2026-06-13
 
 ### Added

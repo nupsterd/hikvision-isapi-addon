@@ -64,22 +64,26 @@ class Config:
 # ---------------------------------------------------------------------------
 
 EVENT_TYPES: dict[tuple[int, int], str] = {
-    # Major 3: Operation Events (acciones del operador, login/logout)
+    # Major 3: Operation Events
     (3, 112): "Admin Login Success",
     (3, 113): "Admin Logout",
     (3, 121): "Admin Login Attempt",
     (3, 122): "Admin Login Failed",
     (3, 1024): "Remote Unlock (acción admin)",
 
-    # Major 5: Access Control Events (eventos físicos de control de acceso)
-    (5, 1): "Authentication Passed (credencial válida)",
-    (5, 2): "Authentication Failed (credencial inválida)",
-    (5, 21): "Door Unlocked",
-    (5, 22): "Door Locked",
+    # Major 5: Access Control Events
+    (5, 1): "Authentication Passed",
+    (5, 2): "Authentication Failed",
+    (5, 21): "Door Unlocked (relé)",
+    (5, 22): "Door Locked (relé)",
     (5, 23): "Exit Button Pressed",
     (5, 24): "Exit Button Released",
-    (5, 30): "Door Forced Open",
-    (5, 31): "Door Open Timeout",
+    (5, 25): "Door Open (autorizado)",
+    (5, 26): "Door Closed (sensor)",
+    (5, 27): "Door Forced Open (intrusión)",
+    (5, 28): "Door Open Timeout",
+    (5, 30): "Door Forced Open (legacy)",
+    (5, 31): "Door Open Timeout (legacy)",
 }
 
 # Eventos que se reenvían a HA (Opción C):
