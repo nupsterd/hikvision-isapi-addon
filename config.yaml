@@ -1,0 +1,37 @@
+name: Hikvision ISAPI Listener
+version: "1.0.0"
+slug: hikvision_isapi_listener
+description: >
+  Listener del Event Stream ISAPI de controladores de acceso Hikvision.
+  Reenvía eventos relevantes a un webhook de Home Assistant y mantiene
+  un log local de auditoría con todos los eventos recibidos.
+
+arch:
+  - aarch64
+  - amd64
+  - armhf
+  - armv7
+  - i386
+
+startup: services
+boot: auto
+init: false
+
+options:
+  controller_host: "192.168.18.70"
+  controller_user: "admin"
+  controller_password: ""
+  ha_webhook_url: "https://192.168.18.60:8123/api/webhook/hik_test_event"
+  audit_log_path: "/data/audit.log"
+  reconnect_delay: 5
+
+schema:
+  controller_host: str
+  controller_user: str
+  controller_password: password
+  ha_webhook_url: url
+  audit_log_path: str
+  reconnect_delay: int(1,300)
+
+map:
+  - data:rw
