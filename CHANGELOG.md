@@ -3,6 +3,16 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versionado siguiendo [SemVer](https://semver.org/lang/es/).
 
+## [1.0.3] - 2026-06-12
+
+### Removed
+- Logs de diagnóstico de password (`pwd_len`, `pwd_repr`) ya no necesarios
+  tras validación end-to-end.
+
+### Changed
+- Webhook por defecto renombrado a `hikvision_access_event` en lugar
+  del `hik_test_event` usado durante desarrollo.
+
 ## [1.0.2] - 2026-06-12
 
 ### Fixed

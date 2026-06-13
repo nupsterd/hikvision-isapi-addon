@@ -1,5 +1,5 @@
 name: Hikvision ISAPI Listener
-version: "1.0.2"
+version: "1.0.3"
 slug: hikvision_isapi_listener
 description: >
   Listener del Event Stream ISAPI de controladores de acceso Hikvision.
@@ -21,7 +21,7 @@ options:
   controller_host: "192.168.18.70"
   controller_user: "admin"
   controller_password: ""
-  ha_webhook_url: "https://192.168.18.60:8123/api/webhook/hik_test_event"
+  ha_webhook_url: "https://192.168.18.60:8123/api/webhook/hikvision_access_event"
   audit_log_path: "/data/audit.log"
   reconnect_delay: 5
 

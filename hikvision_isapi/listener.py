@@ -350,12 +350,9 @@ def main() -> None:
         sys.exit(1)
 
     log.info(
-        "Listener iniciado. Controlador=%s user=%s pwd_len=%d pwd_repr=%r, HA webhook=%s, audit=%s",
+        "Listener iniciado. Controlador=%s user=%s HA webhook=%s audit=%s",
         cfg.controller_host,
         cfg.controller_user,
-        len(cfg.controller_password),
-        cfg.controller_password[:1] + "***" + cfg.controller_password[-1:] if len(
-            cfg.controller_password) > 2 else "***",
         cfg.ha_webhook_url,
         cfg.audit_log_path,
     )
