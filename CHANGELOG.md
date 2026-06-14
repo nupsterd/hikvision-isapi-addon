@@ -3,6 +3,19 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versionado siguiendo [SemVer](https://semver.org/lang/es/).
 
+## [1.0.6] - 2026-06-14
+
+### Fixed
+- Mapeo invertido de eventos `(5, 25)` y `(5, 26)` del Access Controller:
+  - `(5, 25)` antes decía "Door Open (autorizado)", ahora dice "Door Closed (sensor)". Corresponde al sensor magnético detectando el cierre físico de la puerta.
+  - `(5, 26)` antes decía "Door Closed (sensor)", ahora dice "Door Open (sensor)". Corresponde al sensor magnético detectando la apertura física de la puerta.
+- El error generaba notificaciones engañosas en HA: el residente recibía "Door Closed" cuando la puerta se acababa de abrir, y viceversa.
+
+### Validation
+- Validado empíricamente vía spike HTTP Listening contra DS-K2624X firmware V1.7.2 build 250210.
+- Hardware de test: sensor magnético DS-PD1-MC-WS cableado con resistencia EOL 1kΩ en serie, `magneticType: alwaysClose` en config de la puerta.
+- Tests confirmados: apertura legítima (Remote Unlock + apertura física), apertura forzada (separación de armadura sin autorización previa), cierre de puerta físico.
+
 ## [1.0.5] - 2026-06-13
 
 ### Added
