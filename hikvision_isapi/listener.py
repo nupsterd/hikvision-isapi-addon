@@ -16,11 +16,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import signal
 import sys
 import time
 import threading
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -53,7 +55,7 @@ class Config:
             controller_user=opts["controller_user"],
             controller_password=opts["controller_password"],
             ha_webhook_url=opts["ha_webhook_url"],
-            audit_log_path=Path(opts.get("audit_log_path", "/data/audit.log")),
+            audit_log_path=Path(opts.get("audit_log_path", "/config/audit.log")),
             reconnect_delay=int(opts.get("reconnect_delay", 5)),
         )
 
@@ -192,20 +194,98 @@ def iter_events_from_stream(response: requests.Response, log: logging.Logger):
 # Auditoría local: append a archivo, una línea por evento (JSON Lines)
 # ---------------------------------------------------------------------------
 
+# Path legacy del audit (v1.0.x escribía acá, en el volumen privado /data del
+# add-on). La migración v1.1.0 lo copia una sola vez al path nuevo /config/audit.log.
+LEGACY_AUDIT_PATH = Path("/data/audit.log")
+
+
 class AuditLogger:
-    """Escribe TODOS los eventos parseados a un archivo JSON Lines para auditoría."""
+    """Escribe TODOS los eventos parseados a un archivo JSON Lines para auditoría.
+
+    Mantiene un handle de archivo persistente en modo append y hace flush()
+    explícito tras cada write: ~5x menos syscalls que open/close por evento,
+    misma garantía de durabilidad ante crash. Sin rotación todavía (volumen
+    estimado ~9 MB/año); cuando llegue (S7-S8) se maneja con patrón SIGHUP.
+    """
 
     def __init__(self, path: Path):
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._fh = path.open("a", encoding="utf-8")
 
-    def write(self, event: dict) -> None:
+    def write(self, record: dict) -> None:
         try:
-            with self.path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(event, ensure_ascii=False) + "\n")
+            self._fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            self._fh.flush()
         except OSError as exc:
-            # No bloqueamos el listener si falla el log; lo reportamos y seguimos
+            # Nunca bloqueamos el reenvío a HA (camino crítico M1/M2);
+            # reportamos a stderr y seguimos.
             logging.getLogger("audit").error("Falló escritura audit log: %s", exc)
+
+
+def build_audit_record(event: dict) -> dict:
+    """Proyecta el evento normalizado de parse_event_block() al schema JSON Lines
+    del audit (superset acordado).
+
+    Campos canónicos: received_ts (timestamp de escritura, ISO 8601 tz del Pi),
+    door, major, sub, sub_name, serial, raw. Más extras útiles que ya producía
+    el parser (incluido device_ts, el dateTime reportado por la controladora).
+    Para eventos kind=="other" los canónicos van en null (schema homogéneo).
+    """
+    received_ts = datetime.now().astimezone().isoformat()  # tz America/Bogota del container
+
+    return {
+        "received_ts": received_ts,
+        "kind": event.get("kind"),
+        "major": event.get("major"),
+        "sub": event.get("sub"),
+        "sub_name": event.get("description"),   # renombrado
+        "door": event.get("door_no"),           # renombrado
+        "serial": event.get("serial_no"),       # renombrado
+        # extras útiles del parser (superset)
+        "device_ts": event.get("timestamp"),    # dateTime reportado por la controladora
+        "device_ip": event.get("device_ip"),
+        "device_mac": event.get("device_mac"),
+        "door_name": event.get("door_name"),
+        "card_no": event.get("card_no"),
+        "employee_no": event.get("employee_no"),
+        "verify_mode": event.get("verify_mode"),
+        "event_type": event.get("event_type"),  # presente en kind=="other"
+        "raw": event.get("raw"),
+    }
+
+
+def migrate_legacy_audit(legacy: Path, new: Path, log: logging.Logger) -> None:
+    """Copia única del audit viejo (/data) al nuevo path (/config) en el arranque.
+
+    - legacy existe y new NO existe   -> copia (copy2) y loguea N líneas migradas.
+    - legacy existe y new YA existe    -> NO sobreescribe; loguea warning y sigue.
+    - legacy no existe                 -> sigue normal.
+    Cualquier fallo (espacio, permisos) -> error a stderr y arranque normal.
+    Nunca aborta el arranque. Legacy queda intacto (respaldo hasta v1.2.0).
+    """
+    try:
+        if legacy == new or not legacy.exists():
+            return
+        if new.exists():
+            log.warning(
+                "Audit nuevo ya existe en %s; NO se migra el legacy (%s). Continuando.",
+                new, legacy,
+            )
+            return
+        new.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(legacy, new)
+        n = sum(1 for _ in new.open("r", encoding="utf-8", errors="replace"))
+        log.info(
+            "Migración audit: %d líneas copiadas de %s a %s. Legacy intacto.",
+            n, legacy, new,
+        )
+    except OSError as exc:
+        logging.getLogger("audit").error(
+            "Falló migración del audit legacy (%s -> %s): %s. "
+            "Continuando con el path nuevo.",
+            legacy, new, exc,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +317,7 @@ def forward_to_ha(webhook_url: str, event: dict, log: logging.Logger) -> None:
 def run(cfg: Config, log: logging.Logger) -> None:
     """Loop principal del listener. Reconecta indefinidamente ante caídas
     y detecta streams zombie (conectado pero sin datos)."""
+    migrate_legacy_audit(LEGACY_AUDIT_PATH, cfg.audit_log_path, log)
     audit = AuditLogger(cfg.audit_log_path)
     url = f"http://{cfg.controller_host}/ISAPI/Event/notification/alertStream"
 
@@ -291,8 +372,8 @@ def run(cfg: Config, log: logging.Logger) -> None:
                     if event is None:
                         continue
 
-                    # Audit: siempre todos
-                    audit.write(event)
+                    # Audit: siempre todos (Opción C — el filtrado aplica solo a HA)
+                    audit.write(build_audit_record(event))
 
                     # Filtrado para HA
                     if event.get("kind") == "access_controller_event":
