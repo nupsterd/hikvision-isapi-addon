@@ -3,6 +3,21 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versionado siguiendo [SemVer](https://semver.org/lang/es/).
 
+## 1.1.0 - 2026-06-15
+
+### Changed
+- `audit.log` se reubica a `/config/audit.log` para que sea visible desde core-ssh en `/addon_configs/<slug>/audit.log`. Antes vivía en `/data/audit.log` (volumen privado, inaccesible).
+- `AuditLogger` mantiene handle persistente con `flush()` por evento (~5x menos syscalls que open/close, misma durabilidad ante crash).
+- Schema del audit unificado (superset): `received_ts`, `device_ts`, `door`, `major`, `sub`, `sub_name`, `serial`, `raw` + extras del parser.
+
+### Added
+- Migración automática única en el arranque desde `/data/audit.log` legacy al nuevo path. No destructiva, no aborta el arranque si falla.
+- Mount `addon_config:rw` en `config.yaml`.
+
+### Notes
+- `data:rw` se mantiene transicionalmente en `map:` para que la migración pueda leer el archivo legacy. Se quitará en v1.2.0 tras validar estabilidad.
+- Cumple ADR-004 (audit local de TODOS los eventos) y ADR-009 (audit unificado accesible operativamente).
+
 ## [1.0.6] - 2026-06-14
 
 ### Fixed
