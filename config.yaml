@@ -1,10 +1,11 @@
 name: Hikvision ISAPI Listener
-version: "1.1.0"
+version: "1.2.0"
 slug: hikvision_isapi_listener
 description: >
   Listener del Event Stream ISAPI de controladores de acceso Hikvision.
-  Reenvía eventos relevantes a un webhook de Home Assistant y mantiene
-  un log local de auditoría con todos los eventos recibidos.
+  Audita todos los eventos en JSON Lines local, reenvía eventos relevantes
+  a un webhook de Home Assistant, y opcionalmente hace fan-out al
+  backend pv-backend.
 
 arch:
   - aarch64
@@ -24,6 +25,10 @@ options:
   ha_webhook_url: "https://192.168.18.60:8123/api/webhook/hikvision_access_event"
   audit_log_path: "/config/audit.log"
   reconnect_delay: 5
+  pv_backend_url: ""
+  pv_backend_verify_token: ""
+  pv_backend_queue_maxsize: 1000
+  pv_backend_timeout_seconds: 3
 
 schema:
   controller_host: str
@@ -32,7 +37,11 @@ schema:
   ha_webhook_url: url
   audit_log_path: str
   reconnect_delay: int(1,300)
+  pv_backend_url: "str?"
+  pv_backend_verify_token: "password?"
+  pv_backend_queue_maxsize: "int(10,100000)"
+  pv_backend_timeout_seconds: "int(1,30)"
 
 map:
-  - data:rw            # transicional v1.1.0: la migración lee /data/audit.log. Se quita en v1.2.0.
+  - data:rw            # transicional: la migración lee /data/audit.log. Se quita en v1.3.0 (§9.3).
   - addon_config:rw    # monta /config -> /addon_configs/<slug>/ (visible desde core-ssh)
