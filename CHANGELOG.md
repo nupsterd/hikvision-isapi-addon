@@ -3,6 +3,34 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versionado siguiendo [SemVer](https://semver.org/lang/es/).
 
+## [1.2.0] - 2026-06-15
+
+### Added
+- **Fan-out opcional al pv-backend**: nuevo `BackendForwarder` thread
+  daemon que reenvía cada record del audit local también al webhook
+  `POST /eventos/hikvision` del backend. Patrón cola thread-safe +
+  reintentos (3 con backoff 0.5/1/2s) + fail-silent total. Opt-in vía
+  `pv_backend_url`.
+- 4 nuevas opciones en `config.yaml`: `pv_backend_url`,
+  `pv_backend_verify_token`, `pv_backend_queue_maxsize`,
+  `pv_backend_timeout_seconds`. Todas opcionales con default
+  deshabilitado/seguro.
+- Header `X-PV-Hikvision-Token` para autenticación shared-secret con el
+  backend (opción A).
+
+### Changed
+- El record que se escribe al audit.log ahora también se calcula una sola
+  vez y se reusa para el fan-out. Cero cambio de schema (sigue siendo el
+  mismo `build_audit_record(event)`).
+
+### Notes
+- Sin tests todavía (entran en Semana 3 paso 5).
+- El reenvío a HA y el audit local NO cambian: el fan-out es un canal
+  paralelo. Si está deshabilitado o el backend está caído, el add-on
+  funciona idéntico a v1.1.0.
+- `data:rw` se mantiene en el map; se retira en v1.3.0 cuando pasen
+  las 2 semanas estipuladas en §9.3 del handoff.
+
 ## 1.1.0 - 2026-06-15
 
 ### Changed

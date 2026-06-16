@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import queue
 import shutil
 import signal
 import sys
@@ -44,6 +45,12 @@ class Config:
     ha_webhook_url: str
     audit_log_path: Path
     reconnect_delay: int = 5
+    # Fan-out opcional al backend pv-backend (S3 paso 4). Todos opcionales:
+    # con pv_backend_url vacío el forwarder queda deshabilitado (no-op).
+    pv_backend_url: str = ""
+    pv_backend_verify_token: str = ""
+    pv_backend_queue_maxsize: int = 1000
+    pv_backend_timeout_seconds: int = 3
 
     @classmethod
     def from_options_json(cls, path: str = "/data/options.json") -> "Config":
@@ -57,6 +64,10 @@ class Config:
             ha_webhook_url=opts["ha_webhook_url"],
             audit_log_path=Path(opts.get("audit_log_path", "/config/audit.log")),
             reconnect_delay=int(opts.get("reconnect_delay", 5)),
+            pv_backend_url=opts.get("pv_backend_url", ""),
+            pv_backend_verify_token=opts.get("pv_backend_verify_token", ""),
+            pv_backend_queue_maxsize=int(opts.get("pv_backend_queue_maxsize", 1000)),
+            pv_backend_timeout_seconds=int(opts.get("pv_backend_timeout_seconds", 3)),
         )
 
 
@@ -289,6 +300,143 @@ def migrate_legacy_audit(legacy: Path, new: Path, log: logging.Logger) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Fan-out opcional al backend pv-backend (canal paralelo a HA, S3 paso 4)
+# ---------------------------------------------------------------------------
+
+class BackendForwarder:
+    """Worker thread daemon que reenvía records al pv-backend.
+
+    Fail-silent total: ningún error rompe el reenvío a HA ni el audit
+    local. Si pv_backend_url está vacío, el forwarder queda no-op
+    (deshabilitado).
+
+    Política:
+    - Cola thread-safe con maxsize configurable. Si llena, drop el
+      nuevo (put_nowait raisea queue.Full).
+    - Reintentos: 3 intentos con backoff 0.5/1/2s.
+    - 4xx (cliente) NO se reintenta. 5xx + RequestException SÍ.
+    - El record es el mismo que se escribió al audit.log: schema unificado.
+    """
+
+    _SENTINEL = object()  # marca de shutdown (no usado activamente hoy)
+
+    def __init__(self, cfg: Config, log: logging.Logger):
+        self.cfg = cfg
+        self.log = log
+        self.enabled = bool(cfg.pv_backend_url.strip())
+        self._queue: Optional[queue.Queue] = (
+            queue.Queue(maxsize=cfg.pv_backend_queue_maxsize) if self.enabled else None
+        )
+        self._thread: Optional[threading.Thread] = None
+        self._dropped_count = 0
+
+    def start(self) -> None:
+        if not self.enabled:
+            self.log.info(
+                "Fan-out al backend deshabilitado (pv_backend_url vacío)."
+            )
+            return
+        if not self.cfg.pv_backend_verify_token:
+            self.log.warning(
+                "Fan-out: pv_backend_url configurada pero sin token. El backend "
+                "va a rechazar todo con 401."
+            )
+        self._thread = threading.Thread(
+            target=self._worker, name="backend-forwarder", daemon=True
+        )
+        self._thread.start()
+        self.log.info(
+            "Fan-out al backend activo: url=%s queue_maxsize=%d timeout=%ds",
+            self.cfg.pv_backend_url,
+            self.cfg.pv_backend_queue_maxsize,
+            self.cfg.pv_backend_timeout_seconds,
+        )
+
+    def enqueue(self, record: dict) -> None:
+        if not self.enabled:
+            return
+        assert self._queue is not None  # enabled => la cola existe
+        try:
+            self._queue.put_nowait(record)
+        except queue.Full:
+            self._dropped_count += 1
+            # Logueamos el primer drop y luego 1 de cada 50, con el total.
+            if self._dropped_count % 50 == 1:
+                self.log.warning(
+                    "Cola de fan-out llena (maxsize=%d): record descartado. "
+                    "Total descartados: %d.",
+                    self.cfg.pv_backend_queue_maxsize,
+                    self._dropped_count,
+                )
+
+    def _worker(self) -> None:
+        assert self._queue is not None
+        # NUNCA salir del while por un fallo de envío: solo el sentinel rompe
+        # el loop. Capturamos Exception (no BaseException) para preservar
+        # KeyboardInterrupt / SystemExit.
+        while True:
+            record = self._queue.get()
+            try:
+                if record is self._SENTINEL:
+                    break
+                self._post_with_retries(record)
+            except Exception as exc:
+                self.log.error(
+                    "Fan-out falló para record (kind=%s major=%s sub=%s): %s",
+                    record.get("kind") if isinstance(record, dict) else "?",
+                    record.get("major") if isinstance(record, dict) else "?",
+                    record.get("sub") if isinstance(record, dict) else "?",
+                    exc,
+                )
+            finally:
+                self._queue.task_done()
+
+    def _post_with_retries(self, record: dict) -> None:
+        url = self.cfg.pv_backend_url
+        token = self.cfg.pv_backend_verify_token
+        timeout = self.cfg.pv_backend_timeout_seconds
+        headers = {"X-PV-Hikvision-Token": token} if token else {}
+        delays = [0.5, 1.0, 2.0]
+        last_exc: Optional[BaseException] = None
+        for attempt, delay in enumerate(delays, start=1):
+            try:
+                resp = requests.post(
+                    url, json=record, headers=headers, timeout=timeout
+                )
+                if 200 <= resp.status_code < 300:
+                    return  # éxito
+                if 400 <= resp.status_code < 500:
+                    # error de cliente: no reintentable (token malo, payload, etc.)
+                    self.log.warning(
+                        "Fan-out no reintentable (HTTP %d): %s",
+                        resp.status_code,
+                        resp.text[:200],
+                    )
+                    return
+                # 5xx -> reintentable
+                last_exc = RuntimeError(f"HTTP {resp.status_code}")
+                self.log.warning(
+                    "Fan-out 5xx (HTTP %d), reintento %d/%d en %.1fs.",
+                    resp.status_code,
+                    attempt,
+                    len(delays),
+                    delay,
+                )
+            except requests.RequestException as exc:
+                last_exc = exc
+                self.log.warning(
+                    "Fan-out request falló (%s), reintento %d/%d en %.1fs.",
+                    exc,
+                    attempt,
+                    len(delays),
+                    delay,
+                )
+            if attempt < len(delays):
+                time.sleep(delay)
+        raise RuntimeError("Fan-out agotó 3 intentos") from last_exc
+
+
+# ---------------------------------------------------------------------------
 # Reenvío a HA via webhook
 # ---------------------------------------------------------------------------
 
@@ -319,6 +467,8 @@ def run(cfg: Config, log: logging.Logger) -> None:
     y detecta streams zombie (conectado pero sin datos)."""
     migrate_legacy_audit(LEGACY_AUDIT_PATH, cfg.audit_log_path, log)
     audit = AuditLogger(cfg.audit_log_path)
+    forwarder = BackendForwarder(cfg, log)
+    forwarder.start()
     url = f"http://{cfg.controller_host}/ISAPI/Event/notification/alertStream"
 
     # Timeout máximo sin recibir nada del stream (incluso heartbeats).
@@ -373,7 +523,10 @@ def run(cfg: Config, log: logging.Logger) -> None:
                         continue
 
                     # Audit: siempre todos (Opción C — el filtrado aplica solo a HA)
-                    audit.write(build_audit_record(event))
+                    record = build_audit_record(event)
+                    audit.write(record)
+                    # Fan-out paralelo al backend (no-op si está deshabilitado).
+                    forwarder.enqueue(record)
 
                     # Filtrado para HA
                     if event.get("kind") == "access_controller_event":
@@ -482,6 +635,13 @@ def main() -> None:
         log.error("Falta opción obligatoria en options.json: %s", exc)
         sys.exit(1)
 
+    log.info(
+        "Config fan-out backend: url=%r token=%s queue_maxsize=%d timeout=%ds",
+        cfg.pv_backend_url or "(deshabilitado)",
+        "configurado" if cfg.pv_backend_verify_token else "(vacío)",
+        cfg.pv_backend_queue_maxsize,
+        cfg.pv_backend_timeout_seconds,
+    )
     log.info(
         "Listener iniciado. Controlador=%s user=%s HA webhook=%s audit=%s",
         cfg.controller_host,
